@@ -1,7 +1,11 @@
 # repo-zoo installer for Windows.
 #
-# Builds a release binary and installs it into a per-user program directory,
-# adding Start Menu and (optionally) desktop shortcuts.
+# When run from a release archive the prebuilt repo-zoo.exe shipped next to this
+# script is used and no Rust toolchain is required. When run from a repository
+# checkout (no exe next to the script) a release build is performed first.
+#
+# Installs into a per-user program directory, adding Start Menu and (optionally)
+# desktop shortcuts.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -53,19 +57,27 @@ if ($Uninstall) {
     exit 0
 }
 
-Write-Host "Building repo-zoo (release)..."
-Push-Location $Root
-try {
-    cargo build --release
-} finally {
-    Pop-Location
+# Use the prebuilt exe shipped next to this script (release archive) and skip
+# the build; a repository checkout builds a release instead.
+$PrebuiltExe = Join-Path $PSScriptRoot $ExeName
+if (Test-Path $PrebuiltExe) {
+    $SourceExe = $PrebuiltExe
+} else {
+    Write-Host "Building repo-zoo (release)..."
+    Push-Location $Root
+    try {
+        cargo build --release
+    } finally {
+        Pop-Location
+    }
+    $SourceExe = $BuiltExe
 }
-if (-not (Test-Path $BuiltExe)) {
-    throw "Build failed: expected $BuiltExe"
+if (-not (Test-Path $SourceExe)) {
+    throw "Expected repo-zoo binary at $SourceExe"
 }
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item $BuiltExe $Exe -Force
+Copy-Item $SourceExe $Exe -Force
 
 if (-not $NoStartMenuShortcut) {
     New-Shortcut -Name "repo-zoo" -TargetPath $Exe -Directory $StartMenuDir
