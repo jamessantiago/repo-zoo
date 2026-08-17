@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=repo-zoo
+Comment=Code project launcher
+Exec=repo-zoo
+Icon=repo-zoo
+Terminal=false
+Categories=Development;
+Keywords=repo;project;launcher;git;
+StartupNotify=false
