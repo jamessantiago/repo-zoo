@@ -102,21 +102,14 @@ pub fn open_config(config: &Config) -> Result<String, String> {
 fn spawn_editor(editor: &str, arg: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // Pass the paths unquoted: Rust quotes arguments containing spaces when
-        // it builds the command line, whereas pre-quoting here makes it escape
-        // the quotes as `\"`, which cmd reads as a backslash + token boundary —
-        // `code` turned into `\code\` and `start` could not find it.
-        //
-        // `start` takes the window title as its first argument, hence the
-        // empty string, which Rust serializes as `""`.
-        Command::new("cmd")
-            .arg("/C")
-            .arg("start")
-            .arg("")
-            .arg(editor)
-            .arg(arg.to_string_lossy().into_owned())
-            .spawn()
-            .map_err(|err| format!("failed to launch {editor}: {err}"))?;
+        // ShellExecuteW starts the editor detached and without a console
+        // window — spawning `cmd /C start` created a console that lingered
+        // open. It also resolves `code.cmd` shims, .lnk shortcuts and PATH the
+        // way Explorer does. The path is passed quoted so a directory with
+        // spaces arrives as a single argument.
+        let arg = arg.to_string_lossy();
+        let params = format!("\"{}\"", arg.replace('"', "\"\""));
+        win::shell_execute(editor, &params)?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -286,8 +279,112 @@ fn spawn_configured_terminal(template: &str, dir: &Path) -> Option<String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let cmd = template.replace("{dir}", &format!("\"{}\"", dir.display()));
-        Command::new("cmd").args(["/C", &cmd]).spawn().ok()?;
+        // The template is a cmd command line. `{dir}` is quoted for cmd, and
+        // the whole thing reaches cmd through CreateProcessW with a raw
+        // command line: passing it via std::process::Command would let Rust
+        // escape the quotes as `\"`, which cmd reads as a backslash + token
+        // boundary and the command would fail to launch. CREATE_NO_WINDOW
+        // hides cmd's own console — the terminal emulator opens its own.
+        let command = template.replace("{dir}", &cmd_quote(dir));
+        win::run_cmd_no_window(&command).ok()?;
         Some(template.to_string())
+    }
+}
+
+/// Quotes a path for use inside a cmd command line, doubling embedded quotes
+/// (cmd's escape rule).
+#[cfg(target_os = "windows")]
+fn cmd_quote(dir: &Path) -> String {
+    format!("\"{}\"", dir.to_string_lossy().replace('"', "\"\""))
+}
+
+/// Windows-native process launching, avoiding `std::process::Command` where its
+/// argument quoting would mangle cmd command lines (Rust escapes embedded
+/// quotes as `\"`, which cmd reads as a backslash plus token boundary).
+#[cfg(target_os = "windows")]
+mod win {
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsString::from(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Opens `file` with `params` the way Explorer would: detached, no console
+    /// window, resolving PATH, `.cmd` shims and `.lnk` shortcuts.
+    pub fn shell_execute(file: &str, params: &str) -> Result<(), String> {
+        let file_w = wide(file);
+        let params_w = wide(params);
+        let verb = wide("open");
+        // Safe: all pointers reference valid null-terminated wide strings.
+        let result = unsafe {
+            ShellExecuteW(
+                0,
+                verb.as_ptr(),
+                file_w.as_ptr(),
+                params_w.as_ptr(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result <= 32 {
+            return Err(format!(
+                "failed to launch {file}: ShellExecute error {result}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Runs a cmd command line in a hidden console (`cmd.exe /C <command>`).
+    /// The command line is passed raw so its quotes reach cmd intact.
+    pub fn run_cmd_no_window(command: &str) -> Result<(), String> {
+        // `lpCommandLine` is mutable, hence the `mut` binding.
+        let mut line = wide(&format!("cmd.exe /C {command}"));
+        let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        startup.cb = size_of::<STARTUPINFOW>() as u32;
+        let mut process = PROCESS_INFORMATION {
+            hProcess: 0,
+            hThread: 0,
+            dwProcessId: 0,
+            dwThreadId: 0,
+        };
+        // Safe: all pointers are valid or null, and the process information is
+        // only written into `process`.
+        let ok = unsafe {
+            CreateProcessW(
+                ptr::null(),
+                line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                0,
+                CREATE_NO_WINDOW,
+                ptr::null(),
+                ptr::null(),
+                &startup,
+                &mut process,
+            )
+        };
+        if ok == 0 {
+            // Safe: GetLastError takes no arguments.
+            let err = unsafe { GetLastError() };
+            return Err(format!("failed to run `{command}` (error {err})"));
+        }
+        // Safe: these handles are owned by this call.
+        unsafe {
+            CloseHandle(process.hProcess);
+            CloseHandle(process.hThread);
+        }
+        Ok(())
     }
 }
