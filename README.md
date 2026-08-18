@@ -45,7 +45,9 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Uninstall
 
 The script builds a release binary and installs it to
 `%LOCALAPPDATA%\Programs\repo-zoo` with Start Menu and desktop shortcuts. For a
-proper setup wizard, compile `windows\repo-zoo.iss` with [Inno Setup].
+proper setup wizard, compile `windows\repo-zoo.iss` with [Inno Setup] (on
+Windows) or `windows\repo-zoo.nsi` with [NSIS] — the NSIS script compiles to a
+`setup.exe` from Linux too (`make win-setup`, requires `makensis`).
 
 Cross-compiling the Windows binary from Linux is supported too:
 
@@ -162,8 +164,9 @@ src/
   tray.rs        system tray (Linux + Windows)
   geometry.rs    window placement, primary-display work area
 scripts/         Linux (sh) and Windows (powershell) installers
-packaging/       .desktop entry + SVG icon
-windows/         Inno Setup installer source
+packaging/       .desktop entry + SVG/PNG/ICO icons
+windows/         Inno Setup + NSIS installer sources
 ```
 
 [Inno Setup]: https://jrsoftware.org/isinfo.php
+[NSIS]: https://nsis.sourceforge.io/
