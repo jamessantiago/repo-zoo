@@ -102,17 +102,19 @@ pub fn open_config(config: &Config) -> Result<String, String> {
 fn spawn_editor(editor: &str, arg: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // Quote both paths; `start` takes the window title as its first
-        // argument, hence the leading empty string.
-        let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\\\""));
+        // Pass the paths unquoted: Rust quotes arguments containing spaces when
+        // it builds the command line, whereas pre-quoting here makes it escape
+        // the quotes as `\"`, which cmd reads as a backslash + token boundary —
+        // `code` turned into `\code\` and `start` could not find it.
+        //
+        // `start` takes the window title as its first argument, hence the
+        // empty string, which Rust serializes as `""`.
         Command::new("cmd")
-            .args([
-                "/C",
-                "start",
-                "",
-                &quoted(editor),
-                &quoted(&arg.to_string_lossy()),
-            ])
+            .arg("/C")
+            .arg("start")
+            .arg("")
+            .arg(editor)
+            .arg(arg.to_string_lossy().into_owned())
             .spawn()
             .map_err(|err| format!("failed to launch {editor}: {err}"))?;
         Ok(())
@@ -217,10 +219,12 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
         {
             return Ok("powershell".to_string());
         }
-        // Classic cmd as a last resort; `/K` keeps the window open. The whole
-        // `cd /d "..."` is a single argument so cmd sees it as one command.
+        // Classic cmd as a last resort; `/K` keeps the window open. The tokens
+        // are passed separately so Rust quotes the directory when it needs to;
+        // embedding `cd /d "..."` in one argument would let Rust escape the
+        // quotes as `\"` and cmd would mangle them.
         Command::new("cmd")
-            .args(["/K", &format!("cd /d \"{dir}\"")])
+            .args(["/K", "cd", "/d", &dir])
             .spawn()
             .map_err(|err| format!("failed to launch terminal: {err}"))?;
         Ok("cmd".to_string())
