@@ -34,6 +34,7 @@ function New-Shortcut {
     $shortcut = $ws.CreateShortcut((Join-Path $Directory "$Name.lnk"))
     $shortcut.TargetPath = $TargetPath
     $shortcut.WorkingDirectory = $InstallDir
+    $shortcut.IconLocation = "$TargetPath,0"
     $shortcut.Description = "repo-zoo code project launcher"
     $shortcut.Save()
 }

@@ -61,7 +61,7 @@ Section "repo-zoo (required)" SecMain
   File "${EXE}"
 
   CreateDirectory "$SMPROGRAMS\repo-zoo"
-  CreateShortcut "$SMPROGRAMS\repo-zoo\repo-zoo.lnk" "$INSTDIR\repo-zoo.exe"
+  CreateShortcut "$SMPROGRAMS\repo-zoo\repo-zoo.lnk" "$INSTDIR\repo-zoo.exe" "" "$INSTDIR\repo-zoo.exe" 0
 
   WriteUninstaller "$INSTDIR\Uninstall repo-zoo.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\repo-zoo" "DisplayName" "${APPNAME}"
@@ -73,7 +73,7 @@ Section "repo-zoo (required)" SecMain
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
-  CreateShortcut "$DESKTOP\repo-zoo.lnk" "$INSTDIR\repo-zoo.exe"
+  CreateShortcut "$DESKTOP\repo-zoo.lnk" "$INSTDIR\repo-zoo.exe" "" "$INSTDIR\repo-zoo.exe" 0
 SectionEnd
 
 Section "Uninstall"

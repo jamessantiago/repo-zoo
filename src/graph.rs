@@ -8,6 +8,10 @@ pub const NODE_H: f32 = 54.0;
 pub const H_GAP: f32 = 80.0;
 pub const V_GAP: f32 = 26.0;
 pub const PAD: f32 = 28.0;
+/// Horizontal graph padding. Kept smaller than [`PAD`] so the whole three-node
+/// row (plus room for the floating scrollbar) fits inside the launcher window
+/// without the scrollbar overlapping the rightmost node.
+pub const H_PAD: f32 = 16.0;
 
 /// Default graph width in nodes; wider layers wrap onto extra sub-rows.
 /// Mirrors the config default (`max_row_width`).
@@ -61,6 +65,10 @@ impl DependencyGraph {
                 },
                 editor: settings.editor.clone(),
                 terminal: settings.terminal.clone(),
+                sln: settings
+                    .sln
+                    .as_ref()
+                    .map(|s| project::expand_tilde(std::path::Path::new(s))),
             });
         }
 
@@ -87,6 +95,7 @@ impl DependencyGraph {
                             kind: project::Kind::Dir,
                             editor: None,
                             terminal: None,
+                            sln: None,
                         });
                         nodes.len() - 1
                     }
@@ -199,7 +208,7 @@ impl DependencyGraph {
         for layer in &layers {
             for (k, chunk) in layer.chunks(cap).enumerate() {
                 let row_y = y + k as f32 * (NODE_H + V_GAP);
-                let mut x = PAD;
+                let mut x = H_PAD;
                 for &node in chunk {
                     positions[node] = Some((x, row_y));
                     x += NODE_W + H_GAP;
@@ -213,9 +222,9 @@ impl DependencyGraph {
         }
 
         let width = if layers.is_empty() {
-            PAD * 2.0
+            H_PAD * 2.0
         } else {
-            max_right + PAD
+            max_right + H_PAD
         };
         let height = if layers.is_empty() {
             PAD * 2.0
@@ -557,5 +566,24 @@ mod tests {
         let rows: std::collections::HashSet<u32> =
             positions.iter().map(|(_, y)| y.round() as u32).collect();
         assert!(rows.len() >= 3, "expected wrapped sub-rows, got {rows:?}");
+    }
+
+    #[test]
+    fn carries_the_solution_file_onto_the_node() {
+        let mut config = config_with(&[("a", &[])]);
+        config.repos.insert(
+            "a".to_string(),
+            crate::config::RepoSettings {
+                path: Some("~/code/a".to_string()),
+                sln: Some("~/code/a/a.sln".to_string()),
+                ..Default::default()
+            },
+        );
+        let graph = DependencyGraph::build(&config);
+
+        let node = graph.nodes.iter().find(|n| n.name == "a").unwrap();
+        let home = dirs::home_dir().unwrap();
+        let expected = home.join("code/a/a.sln");
+        assert_eq!(node.sln.as_deref(), Some(expected.as_path()));
     }
 }

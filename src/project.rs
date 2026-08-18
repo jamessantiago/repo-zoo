@@ -11,6 +11,9 @@ pub struct Repo {
     pub kind: Kind,
     pub editor: Option<String>,
     pub terminal: Option<String>,
+    /// Optional solution file (`.sln`) passed to the editor instead of the
+    /// project directory when opening the project.
+    pub sln: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +127,7 @@ fn repo_from_path(name: &str, path: &Path, kind: Kind) -> Repo {
         kind,
         editor: None,
         terminal: None,
+        sln: None,
     }
 }
 

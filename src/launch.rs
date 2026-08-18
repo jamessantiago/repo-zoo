@@ -27,12 +27,25 @@ pub fn open_project_with_mode(
 
     match mode {
         OpenMode::Editor => {
-            // On Windows `code` is not always on PATH even when VS Code is
-            // installed, so probe known install locations first.
+            // The repo's solution file, when configured and present, is what
+            // gets opened (e.g. devenv / VS Code open a `.sln`); otherwise the
+            // project directory is passed. On Windows `code` is not always on
+            // PATH even when VS Code is installed, so probe known install
+            // locations first.
+            let target = repo
+                .sln
+                .as_deref()
+                .filter(|sln| !sln.as_os_str().is_empty() && sln.exists())
+                .unwrap_or(dir);
             if let Some(editor) = editor_command(editor)
-                && Command::new(&editor).arg(dir).spawn().is_ok()
+                && spawn_editor(&editor, target).is_ok()
             {
-                return Ok(format!("opened `{}` in {} ({name})", dir.display(), editor));
+                let what = if target == dir {
+                    dir.display().to_string()
+                } else {
+                    target.display().to_string()
+                };
+                return Ok(format!("opened `{what}` in {editor} ({name})"));
             }
             open_in_terminal(dir, terminal).map(|cmd| format!("opened {name} in terminal ({cmd})"))
         }
@@ -77,11 +90,41 @@ pub fn open_config(config: &Config) -> Result<String, String> {
     let Some(editor) = editor_command(&editor) else {
         return Err("no editor found: install VS Code or set `editor` in the config".to_string());
     };
-    Command::new(&editor)
-        .arg(&path)
-        .spawn()
-        .map_err(|err| format!("failed to open config in {editor}: {err}"))?;
+    spawn_editor(&editor, &path)?;
     Ok(format!("opened config in {editor}"))
+}
+
+/// Launches `editor` with `arg` as a detached process so it keeps running even
+/// after repo-zoo exits. On Windows this shells out to `cmd /C start`, which
+/// starts the program without inheriting repo-zoo's console or lifetime —
+/// launching the editor this way is more reliable than a plain `spawn()` for
+/// GUI editors (VS Code's `code.cmd`, devenv, …).
+fn spawn_editor(editor: &str, arg: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Quote both paths; `start` takes the window title as its first
+        // argument, hence the leading empty string.
+        let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\\\""));
+        Command::new("cmd")
+            .args([
+                "/C",
+                "start",
+                "",
+                &quoted(editor),
+                &quoted(&arg.to_string_lossy()),
+            ])
+            .spawn()
+            .map_err(|err| format!("failed to launch {editor}: {err}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new(editor)
+            .arg(arg)
+            .spawn()
+            .map_err(|err| format!("failed to launch {editor}: {err}"))?;
+        Ok(())
+    }
 }
 
 /// Returns the editor command to spawn, or `None` when none is usable.

@@ -36,6 +36,12 @@ fn main() -> iced::Result {
         return Ok(());
     }
 
+    // Only one window at a time: a second launch toggles the running instance
+    // and exits instead of opening another window.
+    if !single_instance() {
+        return Ok(());
+    }
+
     prefer_x11_positioning();
 
     // When a tray icon is enabled the window hides to the tray on close
@@ -62,6 +68,50 @@ fn main() -> iced::Result {
         .theme(Theme::KanagawaDragon)
         .subscription(app::subscription)
         .run()
+}
+
+/// Prevents more than one repo-zoo instance (and therefore more than one
+/// window) from running at a time.
+///
+/// On Windows a named mutex is created at startup; if it already exists a
+/// previous instance is running, so we ask it to toggle (the same effect as
+/// `repo-zoo --toggle`) and exit. The handle is intentionally leaked so the
+/// mutex stays held for the process lifetime and is released by the OS on
+/// exit. Other platforms get no single-instance guard.
+#[cfg(target_os = "windows")]
+fn single_instance() -> bool {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let name: Vec<u16> = OsString::from("repo-zoo-single-instance")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // Safe: `name` is a valid null-terminated wide string and the attributes
+    // pointer is null (default security).
+    let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+    if handle == 0 {
+        // The mutex couldn't be created (permissions, exotic session) — let
+        // the instance run rather than blocking the user.
+        return true;
+    }
+    // Safe: GetLastError takes no arguments.
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        let _ = crate::hotkey::toggle_active_instance();
+        return false;
+    }
+    // Keep the handle alive: it is never closed, so the mutex stays held for
+    // the process lifetime and is released by the OS on exit.
+    let _ = handle;
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn single_instance() -> bool {
+    true
 }
 
 /// On Wayland sessions that also have an X server (e.g. KDE's XWayland), video

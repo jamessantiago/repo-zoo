@@ -536,6 +536,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
             scrollable(list)
                 .height(Length::Fill)
                 .width(Length::Fill)
+                // Reserve space for the vertical scrollbar so it never floats
+                // over the action buttons at the right end of a row.
+                .spacing(8.0)
                 .into()
         }
         View::Graph => {
@@ -547,6 +550,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ))
             .id(GRAPH_SCROLL_ID)
             .on_scroll(Message::GraphScrolled)
+            // Both axes: the canvas is wider than the viewport for larger
+            // `max_row_width` configs, and the floating scrollbars sit in the
+            // graph's padding instead of over the rightmost node.
+            .direction(scrollable::Direction::Both {
+                vertical: scrollable::Scrollbar::default(),
+                horizontal: scrollable::Scrollbar::default(),
+            })
             .width(Length::Fill)
             .height(Length::Fill);
             let hint = container(

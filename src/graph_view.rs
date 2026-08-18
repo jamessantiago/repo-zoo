@@ -17,6 +17,11 @@ const REMOTE_TRUNCATE: usize = 26;
 const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 5.0;
 const ICON_RIGHT: f32 = 8.0;
+/// Optical correction for the icon glyphs: iced vertically centers text by its
+/// line box (which includes descender space), so the glyph's visual center
+/// lands a couple of pixels above the box's center. Nudge it back down so the
+/// glyph looks centered inside its 16px background.
+const ICON_GLYPH_Y_ADJUST: f32 = 1.5;
 
 #[derive(Default)]
 pub struct ProgramState {
@@ -259,7 +264,10 @@ impl<'a> canvas::Program<Message> for GraphProgram<'a> {
                 );
                 frame.fill_text(Text {
                     content: icon.glyph.to_string(),
-                    position: icon.rect.center(),
+                    position: Point {
+                        x: icon.rect.center().x,
+                        y: icon.rect.center().y + ICON_GLYPH_Y_ADJUST,
+                    },
                     color: label_color,
                     size: Pixels(11.0),
                     align_x: alignment::Horizontal::Center.into(),

@@ -34,6 +34,8 @@ pub struct RepoSettings {
     pub editor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sln: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
 }

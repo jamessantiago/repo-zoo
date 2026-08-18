@@ -85,6 +85,7 @@ path = "~/code/myproject"     # absent path + remote present => clone candidate
 remote = "git@github.com:user/myproject.git"
 editor = "nvim"               # per-repo overrides (optional)
 terminal = "kitty --directory {dir}"
+sln = "~/code/myproject/myproject.sln"   # solution file passed to the editor instead of the dir (optional)
 ```
 
 Notes:
@@ -93,6 +94,9 @@ Notes:
   (shell-quoted on Unix). A bare command is also fine — an emulator is
   auto-detected otherwise (alacritty, kitty, gnome-terminal, konsole, foot,
   wezterm, xterm, …).
+- `sln` is handy on Windows: when set and the file exists, opening the project
+  in the editor launches the editor with the solution file instead of the
+  directory (e.g. `start "" "C:\...\devenv.exe" "myproject.sln"`).
 - A repo with a `remote` but no `path` is an external dependency until you
   clone it; the clone lands in the first configured root (or `path` if you set
   one), then the config is reloaded so it becomes openable.
@@ -132,10 +136,13 @@ preferring XWayland.
 | Terminal launch       | auto-detect  | Windows Terminal → PowerShell → cmd |
 | App icon              | window + tray | window + tray + exe + installer |
 | `--toggle`            | D-Bus (KWin) | hotkey window message |
+| Single instance       | —            | named mutex; second launch toggles the running window |
 
 On Plasma the hotkey is registered with KWin itself (visible under System
 Settings → Shortcuts → KWin), so it also works on Wayland. Other platforms
-compile with tray/hotkey disabled.
+compile with tray/hotkey disabled. On Windows only one instance runs at a time:
+starting repo-zoo again toggles the existing window (like `--toggle`) and
+exits, instead of opening a second window.
 
 ## Build
 

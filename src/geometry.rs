@@ -67,7 +67,14 @@ pub fn window_rect() -> Option<(Point, Size)> {
     let bottom = monitor
         .work_area_bottom
         .unwrap_or(monitor.y + monitor.height - BOTTOM_OFFSET);
-    let y = bottom - height;
+
+    // `settings.size`/`Position::Specific` describe the window's *client*
+    // area, while the top-left we return here is the *outer* (framed)
+    // position. On platforms with a window frame the client area sits
+    // `chrome_top` below that origin, so without this correction the window's
+    // content would dip below the work area (and behind the taskbar).
+    let (chrome_top, chrome_bottom) = window_chrome();
+    let y = bottom - height - chrome_top - chrome_bottom;
 
     Some((Point::new(x, y), Size::new(width, height)))
 }
@@ -234,10 +241,74 @@ fn xrandr_primary() -> Option<Monitor> {
     Some(monitor)
 }
 
+/// The vertical window frame (title bar + borders) in logical pixels, used to
+/// anchor the client area above the work area. `(top, bottom)`; `(0, 0)` on
+/// platforms without a decorated frame we control the placement of.
+fn window_chrome() -> (f32, f32) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            AdjustWindowRectEx, WS_OVERLAPPEDWINDOW,
+        };
+
+        win_ensure_dpi_aware();
+        let scale = win_scale_factor();
+
+        // The chrome height is independent of the client size, so any small
+        // client rect works; `AdjustWindowRectEx` returns the surrounding
+        // outer rect for the standard overlapped style winit uses.
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: 200,
+        };
+        // Safe: `rect` is a valid in/out pointer for a `RECT`.
+        unsafe {
+            AdjustWindowRectEx(&mut rect, WS_OVERLAPPEDWINDOW, 0, 0);
+        }
+        (
+            (-rect.top).max(0) as f32 / scale,
+            rect.bottom.max(0) as f32 / scale,
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        (0.0, 0.0)
+    }
+}
+
+/// Makes the process Per-Monitor-V2 DPI aware so that `SystemParametersInfoW`
+/// and `AdjustWindowRectEx` report physical pixels, which we convert to the
+/// logical units iced expects. Idempotent and safe to call more than once;
+/// winit sets the same context when the event loop starts.
+#[cfg(target_os = "windows")]
+fn win_ensure_dpi_aware() {
+    use windows_sys::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
+    // Safe: a process-wide DPI context, no pointers involved.
+    unsafe {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
+
+/// The scale factor of the primary monitor (96 DPI = 1.0).
+#[cfg(target_os = "windows")]
+fn win_scale_factor() -> f32 {
+    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+    // Safe: takes no arguments and returns the system DPI.
+    (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0)
+}
+
 #[cfg(target_os = "windows")]
 fn primary_work_area() -> Option<Monitor> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETWORKAREA, SystemParametersInfoW};
+
+    win_ensure_dpi_aware();
+    let scale = win_scale_factor();
 
     let mut rect: RECT = unsafe { std::mem::zeroed() };
     // Safe: `rect` is a valid out-pointer for a `RECT`.
@@ -251,11 +322,11 @@ fn primary_work_area() -> Option<Monitor> {
         rect.bottom as f32,
     );
     Some(Monitor {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-        work_area_bottom: Some(bottom),
+        x: left / scale,
+        y: top / scale,
+        width: (right - left) / scale,
+        height: (bottom - top) / scale,
+        work_area_bottom: Some(bottom / scale),
     })
 }
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
