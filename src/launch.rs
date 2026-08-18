@@ -27,25 +27,47 @@ pub fn open_project_with_mode(
 
     match mode {
         OpenMode::Editor => {
-            // The repo's solution file, when configured and present, is what
-            // gets opened (e.g. devenv / VS Code open a `.sln`); otherwise the
-            // project directory is passed. On Windows `code` is not always on
-            // PATH even when VS Code is installed, so probe known install
-            // locations first.
-            let target = repo
-                .sln
-                .as_deref()
-                .filter(|sln| !sln.as_os_str().is_empty() && sln.exists())
-                .unwrap_or(dir);
+            #[cfg(target_os = "windows")]
+            {
+                // Windows: a configured solution file is handed to its system
+                // association (Visual Studio et al.) rather than to the
+                // configured editor.
+                if let Some(sln) = repo
+                    .sln
+                    .as_deref()
+                    .filter(|sln| !sln.as_os_str().is_empty() && sln.exists())
+                {
+                    win::open_with_association(&sln.to_string_lossy())?;
+                    return Ok(format!(
+                        "opened `{}` via its default app ({name})",
+                        sln.display()
+                    ));
+                }
+            }
+
+            // What gets handed to the editor: on Windows the project directory,
+            // elsewhere the solution file when configured (editors like
+            // devenv / VS Code open a `.sln` directly).
+            let target: &std::path::Path = {
+                #[cfg(target_os = "windows")]
+                {
+                    dir
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    repo.sln
+                        .as_deref()
+                        .filter(|sln| !sln.as_os_str().is_empty() && sln.exists())
+                        .unwrap_or(dir)
+                }
+            };
             if let Some(editor) = editor_command(editor)
                 && spawn_editor(&editor, target).is_ok()
             {
-                let what = if target == dir {
-                    dir.display().to_string()
-                } else {
-                    target.display().to_string()
-                };
-                return Ok(format!("opened `{what}` in {editor} ({name})"));
+                return Ok(format!(
+                    "opened `{}` in {editor} ({name})",
+                    target.display()
+                ));
             }
             open_in_terminal(dir, terminal).map(|cmd| format!("opened {name} in terminal ({cmd})"))
         }
@@ -102,14 +124,12 @@ pub fn open_config(config: &Config) -> Result<String, String> {
 fn spawn_editor(editor: &str, arg: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // ShellExecuteW starts the editor detached and without a console
-        // window — spawning `cmd /C start` created a console that lingered
-        // open. It also resolves `code.cmd` shims, .lnk shortcuts and PATH the
-        // way Explorer does. The path is passed quoted so a directory with
-        // spaces arrives as a single argument.
-        let arg = arg.to_string_lossy();
-        let params = format!("\"{}\"", arg.replace('"', "\"\""));
-        win::shell_execute(editor, &params)?;
+        // CreateProcessW launches the editor directly and detached — no cmd
+        // involved, so no stray console window. The command line is built raw
+        // with both tokens quoted so paths containing spaces survive.
+        let arg = arg.to_string_lossy().replace('"', "\"\"");
+        let line = format!("\"{editor}\" \"{arg}\"");
+        win::run(&line, false)?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -286,7 +306,7 @@ fn spawn_configured_terminal(template: &str, dir: &Path) -> Option<String> {
         // boundary and the command would fail to launch. CREATE_NO_WINDOW
         // hides cmd's own console — the terminal emulator opens its own.
         let command = template.replace("{dir}", &cmd_quote(dir));
-        win::run_cmd_no_window(&command).ok()?;
+        win::run(&format!("cmd.exe /C {command}"), true).ok()?;
         Some(template.to_string())
     }
 }
@@ -309,7 +329,7 @@ mod win {
 
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
     use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
+        CREATE_NO_WINDOW, CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
     };
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -321,36 +341,37 @@ mod win {
             .collect()
     }
 
-    /// Opens `file` with `params` the way Explorer would: detached, no console
-    /// window, resolving PATH, `.cmd` shims and `.lnk` shortcuts.
-    pub fn shell_execute(file: &str, params: &str) -> Result<(), String> {
-        let file_w = wide(file);
-        let params_w = wide(params);
+    /// Opens a file through its system association (e.g. a `.sln` in Visual
+    /// Studio), exactly as if it had been double-clicked in Explorer. Detached,
+    /// no console window.
+    pub fn open_with_association(path: &str) -> Result<(), String> {
+        let path_w = wide(path);
         let verb = wide("open");
         // Safe: all pointers reference valid null-terminated wide strings.
         let result = unsafe {
             ShellExecuteW(
                 0,
                 verb.as_ptr(),
-                file_w.as_ptr(),
-                params_w.as_ptr(),
+                path_w.as_ptr(),
+                ptr::null(),
                 ptr::null(),
                 SW_SHOWNORMAL,
             )
         };
         if result <= 32 {
             return Err(format!(
-                "failed to launch {file}: ShellExecute error {result}"
+                "failed to open `{path}`: ShellExecute error {result}"
             ));
         }
         Ok(())
     }
 
-    /// Runs a cmd command line in a hidden console (`cmd.exe /C <command>`).
-    /// The command line is passed raw so its quotes reach cmd intact.
-    pub fn run_cmd_no_window(command: &str) -> Result<(), String> {
+    /// Creates a detached process from a raw command line, e.g.
+    /// `"C:\path\Code.exe" "C:\dir"` or `cmd.exe /C <template>`. `no_window`
+    /// suppresses the console the process would otherwise inherit.
+    pub fn run(command_line: &str, no_window: bool) -> Result<(), String> {
         // `lpCommandLine` is mutable, hence the `mut` binding.
-        let mut line = wide(&format!("cmd.exe /C {command}"));
+        let mut line = wide(command_line);
         let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
         startup.cb = size_of::<STARTUPINFOW>() as u32;
         let mut process = PROCESS_INFORMATION {
@@ -359,6 +380,7 @@ mod win {
             dwProcessId: 0,
             dwThreadId: 0,
         };
+        let flags: PROCESS_CREATION_FLAGS = if no_window { CREATE_NO_WINDOW } else { 0 };
         // Safe: all pointers are valid or null, and the process information is
         // only written into `process`.
         let ok = unsafe {
@@ -368,7 +390,7 @@ mod win {
                 ptr::null(),
                 ptr::null(),
                 0,
-                CREATE_NO_WINDOW,
+                flags,
                 ptr::null(),
                 ptr::null(),
                 &startup,
@@ -378,7 +400,7 @@ mod win {
         if ok == 0 {
             // Safe: GetLastError takes no arguments.
             let err = unsafe { GetLastError() };
-            return Err(format!("failed to run `{command}` (error {err})"));
+            return Err(format!("failed to run `{command_line}` (error {err})"));
         }
         // Safe: these handles are owned by this call.
         unsafe {

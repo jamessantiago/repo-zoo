@@ -95,8 +95,8 @@ Notes:
   auto-detected otherwise (alacritty, kitty, gnome-terminal, konsole, foot,
   wezterm, xterm, …).
 - `sln` is handy on Windows: when set and the file exists, opening the project
-  in the editor launches the editor with the solution file instead of the
-  directory (e.g. `start "" "C:\...\devenv.exe" "myproject.sln"`).
+  hands the solution file to its system association (Visual Studio et al.) via
+  `ShellExecuteW` instead of the configured editor.
 - A repo with a `remote` but no `path` is an external dependency until you
   clone it; the clone lands in the first configured root (or `path` if you set
   one), then the config is reloaded so it becomes openable.
