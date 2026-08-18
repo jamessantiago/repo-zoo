@@ -252,6 +252,25 @@ mod win {
         }
     }
 
+    /// Formats a useful message for a failed `RegisterHotKey`. An OS error of
+    /// 0 (ERROR_SUCCESS) is what the system reports for combinations it
+    /// reserves itself (e.g. Win+E, Win+F, Win+L), so call that out rather
+    /// than printing a bare `error 0`.
+    fn hotkey_error() -> String {
+        use windows_sys::Win32::Foundation::ERROR_HOTKEY_ALREADY_REGISTERED;
+
+        let err = std::io::Error::last_os_error();
+        let raw = err.raw_os_error().unwrap_or(0);
+        let detail = match raw {
+            0 => "the combination may be reserved by Windows or already in use".to_string(),
+            e if e as u32 == ERROR_HOTKEY_ALREADY_REGISTERED => {
+                "the hotkey is already registered by another application".to_string()
+            }
+            _ => err.to_string(),
+        };
+        format!("failed to register the hotkey (error {raw}): {detail}")
+    }
+
     pub fn stream(combo: WinHotkey) -> impl Stream<Item = Event> {
         let (tx, rx) = mpsc::unbounded();
         std::thread::spawn(move || {
@@ -360,9 +379,7 @@ mod win {
             // MOD_NOREPEAT avoids spamming toggles while the key is held down.
             if RegisterHotKey(hwnd, HOTKEY_ID, combo.mods | MOD_NOREPEAT, combo.vk as u32) == 0 {
                 drop(Box::from_raw(sender as *mut mpsc::UnboundedSender<Event>));
-                return Err(
-                    format!("failed to register the hotkey (error {})", GetLastError()).into(),
-                );
+                return Err(hotkey_error().into());
             }
 
             let mut msg = std::mem::zeroed::<MSG>();

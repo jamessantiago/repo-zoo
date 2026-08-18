@@ -20,6 +20,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\repo-zoo
 DefaultGroupName=repo-zoo
+SetupIconFile=..\packaging\repo-zoo.ico
 DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=repo-zoo-setup

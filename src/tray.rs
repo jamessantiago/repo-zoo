@@ -48,8 +48,8 @@ fn stream() -> impl Stream<Item = Event> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error>> {
+    use tray_icon::TrayIconBuilder;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-    use tray_icon::{Icon, TrayIconBuilder};
 
     // On Linux the appindicator menu and clicks are dispatched by a GTK main
     // loop owned on this thread. Windows needs no such pump: tray-icon runs
@@ -62,7 +62,7 @@ fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error
 
     let menu = Menu::with_items(&[&toggle, &quit])?;
 
-    let icon = Icon::from_rgba(tray_icon_pixels(), 22, 22)?;
+    let icon = tray_icon();
 
     let _tray = TrayIconBuilder::new()
         .with_icon(icon)
@@ -97,28 +97,23 @@ fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error
     }
 }
 
-/// 22x22 RGBA icon: a filled disc in the app's accent colour.
+/// 22x22 tray icon downscaled from the bundled 256px PNG. The tray size is
+/// what Windows and most Linux panels request; the icon crate scales it.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn tray_icon_pixels() -> Vec<u8> {
-    const SIZE: u32 = 22;
-    let (r, g, b) = (0.60, 0.55, 0.90);
-    let (r, g, b) = ((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
-    let radius = (SIZE as f32 / 2.0) - 3.0;
-    let center = SIZE as f32 / 2.0;
+fn tray_icon() -> tray_icon::Icon {
+    const TRAY_SIZE: u32 = 22;
 
-    let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            if dx * dx + dy * dy <= radius * radius {
-                pixels.extend_from_slice(&[r, g, b, 255]);
-            } else {
-                pixels.extend_from_slice(&[0, 0, 0, 0]);
-            }
-        }
-    }
-    pixels
+    let source = image::load_from_memory(include_bytes!("../packaging/repo-zoo.png"))
+        .expect("bundled icon must decode")
+        .to_rgba8();
+    let scaled = image::imageops::resize(
+        &source,
+        TRAY_SIZE,
+        TRAY_SIZE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    tray_icon::Icon::from_rgba(scaled.into_raw(), TRAY_SIZE, TRAY_SIZE)
+        .expect("tray icon must be a valid RGBA buffer")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

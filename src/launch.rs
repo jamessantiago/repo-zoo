@@ -27,7 +27,11 @@ pub fn open_project_with_mode(
 
     match mode {
         OpenMode::Editor => {
-            if !editor.trim().is_empty() && Command::new(editor).arg(dir).spawn().is_ok() {
+            // On Windows `code` is not always on PATH even when VS Code is
+            // installed, so probe known install locations first.
+            if let Some(editor) = editor_command(editor)
+                && Command::new(&editor).arg(dir).spawn().is_ok()
+            {
                 return Ok(format!("opened `{}` in {} ({name})", dir.display(), editor));
             }
             open_in_terminal(dir, terminal).map(|cmd| format!("opened {name} in terminal ({cmd})"))
@@ -70,11 +74,78 @@ pub fn open_config(config: &Config) -> Result<String, String> {
     } else {
         config.editor.clone()
     };
+    let Some(editor) = editor_command(&editor) else {
+        return Err("no editor found: install VS Code or set `editor` in the config".to_string());
+    };
     Command::new(&editor)
         .arg(&path)
         .spawn()
         .map_err(|err| format!("failed to open config in {editor}: {err}"))?;
     Ok(format!("opened config in {editor}"))
+}
+
+/// Returns the editor command to spawn, or `None` when none is usable.
+///
+/// On Linux the configured command is used as-is. On Windows known VS Code
+/// install locations are probed first (the `code`/`code.cmd` launcher is often
+/// missing from PATH), then a PATH lookup; `None` means the caller should fall
+/// back to the terminal.
+fn editor_command(configured: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        for location in vscode_locations() {
+            if location.is_file() {
+                return Some(location.to_string_lossy().into_owned());
+            }
+        }
+        if configured.trim().is_empty() {
+            return None;
+        }
+        executable_on_path(configured).then(|| configured.to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Some(configured.to_string())
+    }
+}
+
+/// Common VS Code install locations, most likely first.
+#[cfg(target_os = "windows")]
+fn vscode_locations() -> Vec<std::path::PathBuf> {
+    let mut locations = Vec::new();
+    for env in ["LOCALAPPDATA", "ProgramFiles"] {
+        let Some(base) = std::env::var_os(env) else {
+            continue;
+        };
+        let base = std::path::PathBuf::from(base);
+        locations.push(base.join("Programs/Microsoft VS Code/Code.exe"));
+        locations.push(base.join("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"));
+    }
+    locations
+}
+
+/// True when `bin` (possibly with a PATHEXT extension like `.cmd`) resolves on
+/// PATH.
+#[cfg(target_os = "windows")]
+fn executable_on_path(bin: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .map(|p| p.split(';').map(|e| e.to_lowercase()).collect())
+        .unwrap_or_default();
+    let bin_lower = bin.to_lowercase();
+    for dir in std::env::split_paths(&path) {
+        if dir.join(bin).is_file() {
+            return true;
+        }
+        for ext in &exts {
+            if dir.join(format!("{bin_lower}{ext}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
@@ -89,8 +160,24 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         let dir = dir.display().to_string();
+
+        // Prefer the system default terminal (Windows Terminal) when present.
+        if Command::new("wt").args(["-d", &dir]).spawn().is_ok() {
+            return Ok("wt".to_string());
+        }
+        // Then PowerShell, using its own quoting so the path is safe.
+        let ps = format!("Set-Location -LiteralPath '{}'", dir.replace('\'', "''"));
+        if Command::new("powershell")
+            .args(["-NoExit", "-Command", &ps])
+            .spawn()
+            .is_ok()
+        {
+            return Ok("powershell".to_string());
+        }
+        // Classic cmd as a last resort; `/K` keeps the window open. The whole
+        // `cd /d "..."` is a single argument so cmd sees it as one command.
         Command::new("cmd")
-            .args(["/C", "start", "", "cmd", "/K", &format!("cd /d \"{dir}\"")])
+            .args(["/K", &format!("cd /d \"{dir}\"")])
             .spawn()
             .map_err(|err| format!("failed to launch terminal: {err}"))?;
         Ok("cmd".to_string())

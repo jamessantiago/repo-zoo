@@ -7,7 +7,7 @@
 //! no display can be queried, iced's default placement is used. Native
 //! Wayland compositors may ignore the requested window position.
 
-use iced::window::{Position, Settings};
+use iced::window::{Icon, Position, Settings};
 use iced::{Point, Size};
 
 /// Fixed window width: a little larger than the three-node-wide canvas
@@ -40,12 +40,19 @@ pub fn window_settings() -> Settings {
         resizable: true,
         ..Settings::default()
     };
+    settings.icon = window_icon();
 
     if let Some((position, size)) = window_rect() {
         settings.size = size;
         settings.position = Position::Specific(position);
     }
     settings
+}
+
+/// The window/taskbar icon, decoded once from the bundled PNG. Best-effort:
+/// on failure iced falls back to a default icon.
+fn window_icon() -> Option<Icon> {
+    iced::window::icon::from_file_data(include_bytes!("../packaging/repo-zoo.png"), None).ok()
 }
 
 /// Computes the launcher's desired placement: size plus the top-left position,

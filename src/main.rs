@@ -1,3 +1,6 @@
+// This is a GUI app: on Windows, don't flash a console window behind it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod app;
 mod config;
 mod geometry;

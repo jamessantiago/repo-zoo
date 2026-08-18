@@ -9,6 +9,10 @@ pub const H_GAP: f32 = 80.0;
 pub const V_GAP: f32 = 26.0;
 pub const PAD: f32 = 28.0;
 
+/// Default graph width in nodes; wider layers wrap onto extra sub-rows.
+/// Mirrors the config default (`max_row_width`).
+pub const DEFAULT_ROW_WIDTH: usize = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Edge {
     /// Index of the dependency (the repo being depended upon).
@@ -22,7 +26,8 @@ pub struct DependencyGraph {
     pub nodes: Vec<Repo>,
     pub edges: Vec<Edge>,
     /// Maximum number of nodes allowed in a row before wrapping a layer onto
-    /// extra sub-rows. `0` means unlimited.
+    /// extra sub-rows. `0` (the default, and what older configs contain) means
+    /// the [`DEFAULT_ROW_WIDTH`]; larger values allow wider layers.
     pub max_row_width: usize,
 }
 
@@ -183,7 +188,7 @@ impl DependencyGraph {
         let mut positions: Vec<Option<(f32, f32)>> = vec![None; self.nodes.len()];
 
         let cap = if self.max_row_width == 0 {
-            usize::MAX
+            DEFAULT_ROW_WIDTH
         } else {
             self.max_row_width
         };
@@ -491,6 +496,24 @@ mod tests {
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"alpine"));
         assert!(!names.contains(&"beta"));
+    }
+
+    #[test]
+    fn zero_row_width_uses_the_default_cap() {
+        // `max_row_width = 0` is what seeded configs contain; it must wrap at
+        // the default width rather than lay everything out on one row.
+        let config = config_with(&[("a", &[]), ("b", &[]), ("c", &[]), ("d", &[]), ("e", &[])]);
+        let graph = DependencyGraph::build(&config);
+        assert_eq!(graph.max_row_width, 0);
+        let layout = graph.layout();
+
+        let three_wide = PAD * 2.0 + 3.0 * NODE_W + 2.0 * H_GAP;
+        assert!(
+            layout.width <= three_wide + 0.5,
+            "graph too wide: {:.0} > {:.0}",
+            layout.width,
+            three_wide
+        );
     }
 
     #[test]

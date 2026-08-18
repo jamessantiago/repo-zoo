@@ -19,6 +19,8 @@ Windows.
   Plasma, X11 grab elsewhere, `RegisterHotKey` on Windows.
 - **System tray** — optional; when enabled, closing the window hides it to the
   tray instead of quitting.
+- **Icon everywhere** — the window, tray, and (on Windows) the executable and
+  installer all use the bundled repo-zoo icon.
 - **Config is just TOML** — one file, hand-editable, re-read on demand.
 
 ## Install
@@ -72,8 +74,8 @@ open_mode = "editor"          # default action on open: editor|terminal|manager
 editor = "code"               # editor command (default: code)
 terminal = ""                 # terminal template, e.g. "konsole --workdir {dir}"
 default_view = "graph"        # graph|list
-max_row_width = 0             # reserved, 0 = auto
-hotkey = "super+f"            # global toggle hotkey
+max_row_width = 3             # graph width in nodes; 0 = the default, larger wraps wider layers
+hotkey = "super+f"            # global toggle hotkey (Windows default: ctrl+alt+z)
 tray = false                  # hide to tray on close instead of quitting
 
 [repos.myproject]
@@ -94,7 +96,10 @@ Notes:
   one), then the config is reloaded so it becomes openable.
 - The hotkey is a `modifier+key` combo: `ctrl`, `shift`, `alt`, `super`, or
   `mod2`, plus a key like `f`, `space`, `f12`, `escape`, … Windows requires at
-  least one modifier.
+  least one modifier. The default is `super+f`, except on Windows where
+  `ctrl+alt+z` is used instead because the system reserves most Win-key
+  combinations (Win+F opens the Feedback Hub) and `RegisterHotKey` will refuse
+  them.
 
 ## Usage
 
@@ -122,7 +127,8 @@ preferring XWayland.
 | Window positioning    | X11/XWayland | yes     |
 | Global hotkey         | KWin (Plasma) or X11 grab | RegisterHotKey |
 | System tray           | yes (AppIndicator) | yes     |
-| Terminal launch       | auto-detect  | `cmd /C start` |
+| Terminal launch       | auto-detect  | Windows Terminal → PowerShell → cmd |
+| App icon              | window + tray | window + tray + exe + installer |
 | `--toggle`            | D-Bus (KWin) | hotkey window message |
 
 On Plasma the hotkey is registered with KWin itself (visible under System

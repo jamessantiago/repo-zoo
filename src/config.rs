@@ -52,7 +52,7 @@ pub struct Config {
     pub terminal: String,
     #[serde(default)]
     pub default_view: DefaultView,
-    #[serde(default)]
+    #[serde(default = "default_row_width")]
     pub max_row_width: u32,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
@@ -71,7 +71,7 @@ impl Default for Config {
             editor: default_editor(),
             terminal: String::new(),
             default_view: DefaultView::default(),
-            max_row_width: 0,
+            max_row_width: default_row_width(),
             hotkey: default_hotkey(),
             tray: false,
             repos: BTreeMap::new(),
@@ -79,12 +79,28 @@ impl Default for Config {
     }
 }
 
+/// The global toggle hotkey. On Windows the Win-key combinations the OS
+/// reserves (Win+F opens the Feedback Hub, Win+E Explorer, …) cannot be
+/// registered, so `super+f` is only the default elsewhere; Windows defaults to
+/// a combination that is free everywhere.
 fn default_hotkey() -> String {
-    "super+f".to_string()
+    #[cfg(target_os = "windows")]
+    {
+        "ctrl+alt+z".to_string()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "super+f".to_string()
+    }
 }
 
 fn default_depth() -> u32 {
     1
+}
+
+/// Default graph width in nodes; wider layers wrap onto extra sub-rows.
+fn default_row_width() -> u32 {
+    3
 }
 
 fn default_editor() -> String {
@@ -206,10 +222,17 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_graph_view_super_z_hotkey() {
+    fn defaults_are_sane() {
         let config = Config::default();
+        // The default hotkey differs per platform: on Windows the system
+        // reserves most Win-key combos (Win+F is the Feedback Hub), so the
+        // default there is a plain Ctrl+Alt+Z.
+        #[cfg(target_os = "windows")]
+        assert_eq!(config.hotkey, "ctrl+alt+z");
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(config.hotkey, "super+f");
         assert_eq!(config.default_view, DefaultView::Graph);
+        assert_eq!(config.max_row_width, 3);
         assert!(config.terminal.is_empty());
     }
 
