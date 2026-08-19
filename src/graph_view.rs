@@ -127,25 +127,26 @@ impl<'a> canvas::Program<Message> for GraphProgram<'a> {
                 b.quadratic_curve_to(routed.control, routed.end);
             });
             let emphasized = active == Some(edge.to);
-            let color = if emphasized {
-                edge_color
-            } else {
-                dim(edge_color, 0.6)
-            };
-            let alpha = if emphasized { 0.95 } else { 0.3 };
+            let alpha = if emphasized { 0.95 } else { 0.55 };
             let width = if emphasized { 2.2 } else { EDGE_WIDTH };
             frame.stroke(
                 &path,
                 Stroke {
                     width,
-                    style: canvas::Style::Solid(Color { a: alpha, ..color }),
+                    style: canvas::Style::Solid(Color {
+                        a: alpha,
+                        ..edge_color
+                    }),
                     ..Default::default()
                 },
             );
             let dir = edge_direction(&routed);
             frame.fill(
                 &arrowhead_path(routed.end, dir),
-                Color { a: alpha, ..color },
+                Color {
+                    a: alpha,
+                    ..edge_color
+                },
             );
         }
 
