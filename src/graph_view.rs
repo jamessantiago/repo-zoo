@@ -8,7 +8,6 @@ use iced::{Color, Pixels, Point, Rectangle, Size, Vector, mouse};
 use iced::{alignment, keyboard};
 
 const EDGE_WIDTH: f32 = 1.6;
-const EDGE_COLOR_ALPHA: f32 = 0.55;
 const ARROW_LEN: f32 = 9.0;
 const ARROW_W: f32 = 4.5;
 const CORNER_RADIUS: f32 = 8.0;
@@ -107,43 +106,67 @@ impl<'a> canvas::Program<Message> for GraphProgram<'a> {
             Color::from_rgb(0.08, 0.08, 0.1)
         };
 
+        // A node whose edges and dependencies are emphasized: the hovered node
+        // takes over the selection emphasis while the pointer is over it (so
+        // the previously selected node renders as unselected for a moment), and
+        // its dependencies are its "children".
+        let active = state.hover.or(Some(self.selected));
+        let mut children: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        if let Some(active) = active {
+            for edge in &self.graph.edges {
+                if edge.to == active {
+                    children.insert(edge.from);
+                }
+            }
+        }
+
         for edge in &self.graph.edges {
             let routed = route_edge(*edge, &self.layout);
             let path = Path::new(|b| {
                 b.move_to(routed.start);
                 b.quadratic_curve_to(routed.control, routed.end);
             });
+            let emphasized = active == Some(edge.to);
+            let color = if emphasized {
+                edge_color
+            } else {
+                dim(edge_color, 0.6)
+            };
+            let alpha = if emphasized { 0.95 } else { 0.3 };
+            let width = if emphasized { 2.2 } else { EDGE_WIDTH };
             frame.stroke(
                 &path,
                 Stroke {
-                    width: EDGE_WIDTH,
-                    style: canvas::Style::Solid(Color {
-                        a: EDGE_COLOR_ALPHA,
-                        ..edge_color
-                    }),
+                    width,
+                    style: canvas::Style::Solid(Color { a: alpha, ..color }),
                     ..Default::default()
                 },
             );
             let dir = edge_direction(&routed);
-            frame.fill(&arrowhead_path(routed.end, dir), edge_color);
+            frame.fill(
+                &arrowhead_path(routed.end, dir),
+                Color { a: alpha, ..color },
+            );
         }
 
         for (index, repo) in self.graph.nodes.iter().enumerate() {
             let pos = self.layout.positions[index];
             let matched = node_has(&self.query, &repo.name);
-            let highlighted = state.hover == Some(index) || self.selected == index;
+            let selected_now = active == Some(index);
+            let child = children.contains(&index);
 
-            let fill = if highlighted {
-                node_border
+            let (fill, alpha) = if selected_now {
+                (node_border, 0.9)
+            } else if child {
+                // A dependency of the selected/hovered node: emphasized, but
+                // less distinctly than the node itself.
+                (node_color, 0.8)
             } else if matched {
-                node_color
+                (node_color, 0.55)
             } else {
-                dim(node_color, 0.4)
+                (dim(node_color, 0.4), 0.55)
             };
-            let fill = Color {
-                a: if highlighted { 0.9 } else { 0.55 },
-                ..fill
-            };
+            let fill = Color { a: alpha, ..fill };
 
             let rect = Rectangle {
                 x: pos.x,
@@ -151,10 +174,19 @@ impl<'a> canvas::Program<Message> for GraphProgram<'a> {
                 width: NODE_W,
                 height: NODE_H,
             };
-            let border = if highlighted {
+            let border = if selected_now {
                 Stroke {
                     width: 2.0,
                     style: canvas::Style::Solid(node_border),
+                    ..Default::default()
+                }
+            } else if child {
+                Stroke {
+                    width: 1.5,
+                    style: canvas::Style::Solid(Color {
+                        a: 0.8,
+                        ..node_border
+                    }),
                     ..Default::default()
                 }
             } else {
@@ -192,7 +224,7 @@ impl<'a> canvas::Program<Message> for GraphProgram<'a> {
                 badge_color,
             );
 
-            let label_color = if matched {
+            let label_color = if selected_now || child || matched {
                 text_color
             } else {
                 Color {
