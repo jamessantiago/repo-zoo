@@ -125,7 +125,10 @@ impl DependencyGraph {
     }
 
     /// Assigns each node a (layer, index_within_layer) position for a
-    /// top-to-bottom dependency layout. Cycles are handled by collapsing
+    /// top-to-bottom layout with the user's own projects on top: a project
+    /// that `depends_on` something is drawn above it, so every edge points
+    /// downward from a dependent to its dependency (an app at the top, its
+    /// libraries further down). Cycles are handled by collapsing
     /// strongly-connected components into a single layer.
     pub fn layering(&self) -> Vec<Vec<usize>> {
         let adj = self.adjacency();
@@ -141,7 +144,9 @@ impl DependencyGraph {
         let mut dag_edges: Vec<(usize, usize)> = Vec::new();
         let mut seen = HashSet::new();
         for edge in &self.edges {
-            let (u, v) = (scc_of[edge.from], scc_of[edge.to]);
+            // Walk the reversed direction (dependent -> dependency) so the
+            // longest-path layering puts dependents on top of what they use.
+            let (u, v) = (scc_of[edge.to], scc_of[edge.from]);
             if u != v && seen.insert((u, v)) {
                 dag_edges.push((u, v));
             }
@@ -391,8 +396,9 @@ mod tests {
     }
 
     #[test]
-    fn layers_dependencies_left_to_right() {
-        // lib-x -> b -> a
+    fn layers_dependents_above_their_dependencies() {
+        // a depends on b, b depends on lib-x; a sits on top, lib-x at the
+        // bottom.
         let config = config_with(&[("a", &["b"]), ("b", &["lib-x"]), ("lib-x", &[])]);
         let graph = DependencyGraph::build(&config);
         let layers = graph.layering();
@@ -405,8 +411,8 @@ mod tests {
                 .unwrap()
         };
 
-        assert!(layer_of("lib-x") < layer_of("b"));
-        assert!(layer_of("b") < layer_of("a"));
+        assert!(layer_of("a") < layer_of("b"));
+        assert!(layer_of("b") < layer_of("lib-x"));
     }
 
     #[test]
@@ -478,16 +484,17 @@ mod tests {
 
     #[test]
     fn reading_order_follows_layout_layers() {
-        // lib-x -> b -> a, plus an unrelated 'z' that sorts first
-        // alphabetically. Reading order must follow the layout, not the name.
+        // a -> b -> lib-x (a depends on b, b on lib-x), plus an unrelated 'z'
+        // that sorts first alphabetically. Reading order must follow the
+        // layout, not the name.
         let config = config_with(&[("a", &["b"]), ("b", &["lib-x"]), ("lib-x", &[]), ("z", &[])]);
         let graph = DependencyGraph::build(&config);
         let order = graph.reading_order("");
 
         let index = |name: &str| graph.nodes.iter().position(|n| n.name == name).unwrap();
         let rank = |name: &str| order.iter().position(|&i| i == index(name)).unwrap();
-        assert!(rank("lib-x") < rank("b"));
-        assert!(rank("b") < rank("a"));
+        assert!(rank("a") < rank("b"));
+        assert!(rank("b") < rank("lib-x"));
         assert_eq!(order.len(), 4);
     }
 
