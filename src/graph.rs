@@ -168,6 +168,23 @@ impl DependencyGraph {
             }
         }
 
+        // Repos that take part in no dependency edge at all are unrelated to
+        // the hierarchy. Instead of sharing the top row with the apps that
+        // depend on things (making it look goofy), sink them to a layer below
+        // everything else so the top of the graph reads as the dependency
+        // structure.
+        let mut in_edge = vec![false; self.nodes.len()];
+        for edge in &self.edges {
+            in_edge[edge.from] = true;
+            in_edge[edge.to] = true;
+        }
+        let max_layer = scc_layer.iter().copied().max().unwrap_or(0);
+        for (s, component) in sccs.iter().enumerate() {
+            if component.iter().all(|&node| !in_edge[node]) {
+                scc_layer[s] = max_layer + 1;
+            }
+        }
+
         // Order SCCs deterministically: by layer, then by smallest node index.
         let mut order: Vec<usize> = (0..num_scc).collect();
         order.sort_by_key(|&s| {
@@ -512,6 +529,31 @@ mod tests {
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"alpine"));
         assert!(!names.contains(&"beta"));
+    }
+
+    #[test]
+    fn unlinked_nodes_sink_below_the_dependency_structure() {
+        // 'z' depends on nothing and nothing depends on it: it must sit below
+        // the layered hierarchy (a -> b -> lib-x) instead of cluttering the
+        // top row.
+        let config = config_with(&[("a", &["b"]), ("b", &["lib-x"]), ("lib-x", &[]), ("z", &[])]);
+        let graph = DependencyGraph::build(&config);
+        let layers = graph.layering();
+
+        let index = |name: &str| graph.nodes.iter().position(|n| n.name == name).unwrap();
+        let layer_of = |name: &str| {
+            layers
+                .iter()
+                .position(|l| l.contains(&index(name)))
+                .unwrap()
+        };
+        assert!(layer_of("z") > layer_of("a"));
+        assert!(layer_of("z") > layer_of("lib-x"));
+        assert_eq!(
+            layer_of("z"),
+            layers.len() - 1,
+            "unlinked nodes share the bottom layer"
+        );
     }
 
     #[test]

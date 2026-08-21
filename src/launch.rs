@@ -4,6 +4,12 @@ use std::process::Command;
 use crate::config::{Config, OpenMode};
 use crate::project::Repo;
 
+#[derive(Debug, Clone)]
+struct ResolvedCommand {
+    program: String,
+    args: String,
+}
+
 pub fn open_project_with_mode(
     repo: &Repo,
     config: &Config,
@@ -61,15 +67,22 @@ pub fn open_project_with_mode(
                         .unwrap_or(dir)
                 }
             };
-            if let Some(editor) = editor_command(editor)
-                && spawn_editor(&editor, target).is_ok()
-            {
-                return Ok(format!(
-                    "opened `{}` in {editor} ({name})",
+            if let Some(editor_cmd) = editor_command(editor) {
+                if spawn_editor(&editor_cmd, target).is_ok() {
+                    return Ok(format!(
+                        "opened `{}` in {editor} ({name})",
+                        target.display()
+                    ));
+                }
+                return Err(format!(
+                    "failed to launch editor `{editor}` for `{}` ({name})",
                     target.display()
                 ));
             }
-            open_in_terminal(dir, terminal).map(|cmd| format!("opened {name} in terminal ({cmd})"))
+            Err(format!(
+                "no editor found for `{}` — install one or set `editor` in the config ({name})",
+                target.display()
+            ))
         }
         OpenMode::Terminal => {
             open_in_terminal(dir, terminal).map(|cmd| format!("opened {name} in terminal ({cmd})"))
@@ -109,101 +122,255 @@ pub fn open_config(config: &Config) -> Result<String, String> {
     } else {
         config.editor.clone()
     };
-    let Some(editor) = editor_command(&editor) else {
+    let Some(editor_cmd) = editor_command(&editor) else {
         return Err("no editor found: install VS Code or set `editor` in the config".to_string());
     };
-    spawn_editor(&editor, &path)?;
+    spawn_editor(&editor_cmd, &path)?;
     Ok(format!("opened config in {editor}"))
 }
 
-/// Launches `editor` with `arg` as a detached process so it keeps running even
-/// after repo-zoo exits. On Windows this shells out to `cmd /C start`, which
-/// starts the program without inheriting repo-zoo's console or lifetime —
-/// launching the editor this way is more reliable than a plain `spawn()` for
-/// GUI editors (VS Code's `code.cmd`, devenv, …).
-fn spawn_editor(editor: &str, arg: &Path) -> Result<(), String> {
+/// Launches the resolved editor command with `arg` as the target path.
+fn spawn_editor(editor: &ResolvedCommand, arg: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // CreateProcessW launches the editor directly and detached — no cmd
-        // involved, so no stray console window. The command line is built raw
-        // with both tokens quoted so paths containing spaces survive.
-        let arg = arg.to_string_lossy().replace('"', "\"\"");
-        let line = format!("\"{editor}\" \"{arg}\"");
-        win::run(&line, false)?;
+        // ShellExecuteW launches the editor the way Explorer would: it resolves
+        // real executables and `.cmd`/`.bat` shims (VS Code's `code.cmd`) alike,
+        // detaches, and shows no console window.
+        let args = build_editor_args_windows(&editor.args, arg);
+        let args = if args.trim().is_empty() {
+            None
+        } else {
+            Some(args)
+        };
+        win::run(&editor.program, args.as_deref())?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Command::new(editor)
-            .arg(arg)
+        let args = build_editor_args_unix(&editor.args, arg);
+        let mut command = shell_quote(&editor.program);
+        if !args.trim().is_empty() {
+            command.push(' ');
+            command.push_str(&args);
+        }
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
             .spawn()
-            .map_err(|err| format!("failed to launch {editor}: {err}"))?;
+            .map_err(|err| format!("failed to launch {}: {err}", editor.program))?;
         Ok(())
     }
 }
 
-/// Returns the editor command to spawn, or `None` when none is usable.
+#[cfg(target_os = "windows")]
+fn build_editor_args_windows(configured_args: &str, target: &Path) -> String {
+    let quoted = windows_quote_arg(target);
+    let configured = configured_args.trim();
+    if configured.is_empty() {
+        return quoted;
+    }
+    let expanded = configured
+        .replace("{target}", &quoted)
+        .replace("{file}", &quoted)
+        .replace("{dir}", &quoted);
+    if expanded == configured {
+        format!("{configured} {quoted}")
+    } else {
+        expanded
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn build_editor_args_unix(configured_args: &str, target: &Path) -> String {
+    let quoted = shell_quote(&target.display().to_string());
+    let configured = configured_args.trim();
+    if configured.is_empty() {
+        return quoted;
+    }
+    let expanded = configured
+        .replace("{target}", &quoted)
+        .replace("{file}", &quoted)
+        .replace("{dir}", &quoted);
+    if expanded == configured {
+        format!("{configured} {quoted}")
+    } else {
+        expanded
+    }
+}
+
+/// Splits a command line into the first token and the raw argument tail.
 ///
-/// On Linux the configured command is used as-is. On Windows known VS Code
-/// install locations are probed first (the `code`/`code.cmd` launcher is often
-/// missing from PATH), then a PATH lookup; `None` means the caller should fall
-/// back to the terminal.
-fn editor_command(configured: &str) -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        for location in vscode_locations() {
-            if location.is_file() {
-                return Some(location.to_string_lossy().into_owned());
-            }
+/// Supports single- and double-quoted first tokens so paths like
+/// `"C:\\Program Files\\Foo\\foo.exe" --flag` are handled correctly.
+fn split_command(command: &str) -> Option<(String, String)> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+
+    let chars: Vec<char> = command.chars().collect();
+    let mut idx = 0;
+    let mut first = String::new();
+
+    if matches!(chars.first(), Some('"' | '\'')) {
+        let quote = chars[0];
+        idx = 1;
+        while idx < chars.len() && chars[idx] != quote {
+            first.push(chars[idx]);
+            idx += 1;
         }
-        if configured.trim().is_empty() {
+        if idx >= chars.len() || chars[idx] != quote {
             return None;
         }
-        executable_on_path(configured).then(|| configured.to_string())
+        idx += 1;
+    } else {
+        while idx < chars.len() && !chars[idx].is_whitespace() {
+            first.push(chars[idx]);
+            idx += 1;
+        }
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Some(configured.to_string())
+
+    if first.is_empty() {
+        return None;
     }
+
+    while idx < chars.len() && chars[idx].is_whitespace() {
+        idx += 1;
+    }
+
+    let args = chars[idx..].iter().collect::<String>();
+    Some((first, args))
+}
+
+/// Resolves the configured editor command to an executable path plus the
+/// original argument tail. The executable is validated up front so callers can
+/// emit a clear error instead of silently doing nothing.
+fn editor_command(configured: &str) -> Option<ResolvedCommand> {
+    let (first, args) = split_command(configured)?;
+
+    let program = resolve_executable(&first).or_else(|| {
+        #[cfg(target_os = "windows")]
+        {
+            vscode_command(&first)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    })?;
+
+    Some(ResolvedCommand {
+        program: program.to_string_lossy().into_owned(),
+        args,
+    })
 }
 
 /// Common VS Code install locations, most likely first.
 #[cfg(target_os = "windows")]
-fn vscode_locations() -> Vec<std::path::PathBuf> {
+fn vscode_locations(insiders: bool) -> Vec<std::path::PathBuf> {
     let mut locations = Vec::new();
     for env in ["LOCALAPPDATA", "ProgramFiles"] {
         let Some(base) = std::env::var_os(env) else {
             continue;
         };
         let base = std::path::PathBuf::from(base);
-        locations.push(base.join("Programs/Microsoft VS Code/Code.exe"));
-        locations.push(base.join("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"));
+        if insiders {
+            locations.push(base.join("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"));
+        } else {
+            locations.push(base.join("Programs/Microsoft VS Code/Code.exe"));
+        }
     }
     locations
 }
 
-/// True when `bin` (possibly with a PATHEXT extension like `.cmd`) resolves on
-/// PATH.
 #[cfg(target_os = "windows")]
-fn executable_on_path(bin: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
+fn vscode_command(name: &str) -> Option<std::path::PathBuf> {
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())?;
+    let insiders = if stem.eq_ignore_ascii_case("code-insiders") {
+        true
+    } else if stem.eq_ignore_ascii_case("code") {
+        false
+    } else {
+        return None;
     };
-    let exts: Vec<String> = std::env::var("PATHEXT")
+
+    vscode_locations(insiders)
+        .into_iter()
+        .find(|location| location.is_file())
+}
+
+/// Resolves `bin` (a bare program name or a path) to an existing file on disk:
+/// as-is when a path was given, otherwise a PATH search, then a few common
+/// non-PATH install locations (flatpak/snap exports, `~/.local/bin`, …).
+/// Returns `None` when the program isn't installed anywhere we'd look, so
+/// callers can fail with a clear message instead of silently doing nothing.
+fn resolve_executable(bin: &str) -> Option<std::path::PathBuf> {
+    let bin = bin.trim();
+    if bin.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(bin);
+    if candidate.components().count() > 1 || candidate.is_absolute() {
+        let expanded = crate::project::expand_tilde(candidate);
+        return expanded.is_file().then_some(expanded);
+    }
+    executable_on_path(bin).or_else(|| {
+        common_dirs()
+            .iter()
+            .map(|dir| dir.join(bin))
+            .find(|path| path.is_file())
+    })
+}
+
+/// Returns the absolute path of `bin` if it resolves on PATH. On Windows the
+/// PATHEXT extensions (`.cmd`, `.exe`, …) are tried too.
+fn executable_on_path(bin: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    #[cfg(target_os = "windows")]
+    let extensions: Vec<String> = std::env::var("PATHEXT")
         .map(|p| p.split(';').map(|e| e.to_lowercase()).collect())
-        .unwrap_or_default();
-    let bin_lower = bin.to_lowercase();
+        .unwrap_or_else(|_| {
+            vec![".com".into(), ".exe".into(), ".bat".into(), ".cmd".into()]
+        });
     for dir in std::env::split_paths(&path) {
-        if dir.join(bin).is_file() {
-            return true;
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
         }
-        for ext in &exts {
-            if dir.join(format!("{bin_lower}{ext}")).is_file() {
-                return true;
+        #[cfg(target_os = "windows")]
+        for ext in &extensions {
+            let candidate = dir.join(format!("{bin}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
             }
         }
     }
-    false
+    None
+}
+
+/// Directories probed after PATH for programs that install outside it: flatpak
+/// and snap exports, `~/.local/bin`, and the classic `/usr/local/bin`. Windows
+/// needs nothing extra — PATH covers the system tools and VS Code has its own
+/// dedicated probe.
+fn common_dirs() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        Vec::new()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut dirs = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.join(".local/bin"));
+            dirs.push(home.join("bin"));
+        }
+        dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+        dirs.push(std::path::PathBuf::from("/snap/bin"));
+        dirs.push(std::path::PathBuf::from("/var/lib/flatpak/exports/bin"));
+        dirs
+    }
 }
 
 fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
@@ -220,15 +387,27 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
         let dir = dir.display().to_string();
 
         // Prefer the system default terminal (Windows Terminal) when present.
-        if Command::new("wt").args(["-d", &dir]).spawn().is_ok() {
+        if let Some(wt) = resolve_executable("wt")
+            && Command::new(wt).args(["-d", &dir]).spawn().is_ok()
+        {
             return Ok("wt".to_string());
         }
-        // Then PowerShell, using its own quoting so the path is safe.
+        // Prefer modern PowerShell when available.
         let ps = format!("Set-Location -LiteralPath '{}'", dir.replace('\'', "''"));
-        if Command::new("powershell")
-            .args(["-NoExit", "-Command", &ps])
-            .spawn()
-            .is_ok()
+        if let Some(pwsh) = resolve_executable("pwsh")
+            && Command::new(pwsh)
+                .args(["-NoExit", "-Command", &ps])
+                .spawn()
+                .is_ok()
+        {
+            return Ok("pwsh".to_string());
+        }
+        // Then PowerShell, using its own quoting so the path is safe.
+        if let Some(powershell) = resolve_executable("powershell")
+            && Command::new(powershell)
+                .args(["-NoExit", "-Command", &ps])
+                .spawn()
+                .is_ok()
         {
             return Ok("powershell".to_string());
         }
@@ -236,7 +415,9 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
         // are passed separately so Rust quotes the directory when it needs to;
         // embedding `cd /d "..."` in one argument would let Rust escape the
         // quotes as `\"` and cmd would mangle them.
-        Command::new("cmd")
+        let cmd = resolve_executable("cmd")
+            .ok_or_else(|| "failed to launch terminal: cmd not found".to_string())?;
+        Command::new(cmd)
             .args(["/K", "cd", "/d", &dir])
             .spawn()
             .map_err(|err| format!("failed to launch terminal: {err}"))?;
@@ -275,7 +456,11 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
         ];
 
         for (bin, args) in candidates {
-            if Command::new(bin).args(&args).spawn().is_ok() {
+            // Resolve first so terminals installed outside PATH (flatpak,
+            // snap, …) are found too.
+            if let Some(exe) = resolve_executable(bin)
+                && Command::new(&exe).args(&args).spawn().is_ok()
+            {
                 return Ok(bin.to_string());
             }
         }
@@ -288,49 +473,105 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
 /// repo path (shell-quoted on Unix), so the template can be anything from a
 /// bare binary to a full command, e.g. `konsole --workdir {dir}` or
 /// `xterm -e bash -c 'cd {dir} && exec bash'`. Returns the configured command
-/// on success.
+/// on success; `None` when the executable can't be found (so the caller falls
+/// back to auto-detection).
 fn spawn_configured_terminal(template: &str, dir: &Path) -> Option<String> {
+    let (first, rest) = split_command(template)?;
+
     #[cfg(not(target_os = "windows"))]
     {
-        let quoted = format!("'{}'", dir.display().to_string().replace('\'', "'\\''"));
-        let cmd = template.replace("{dir}", &quoted);
+        // Resolve the executable first: `sh -c` would happily "succeed"
+        // while the configured terminal silently fails when it isn't on PATH.
+        let resolved = resolve_executable(&first)?;
+        let mut cmd = shell_quote(&resolved.to_string_lossy());
+        let rest = rest.replace("{dir}", &shell_quote(&dir.display().to_string()));
+        if !rest.trim().is_empty() {
+            cmd.push(' ');
+            cmd.push_str(rest.trim());
+        }
         Command::new("sh").arg("-c").arg(&cmd).spawn().ok()?;
         Some(template.to_string())
     }
     #[cfg(target_os = "windows")]
     {
-        // The template is a cmd command line. `{dir}` is quoted for cmd, and
-        // the whole thing reaches cmd through CreateProcessW with a raw
-        // command line: passing it via std::process::Command would let Rust
-        // escape the quotes as `\"`, which cmd reads as a backslash + token
-        // boundary and the command would fail to launch. CREATE_NO_WINDOW
-        // hides cmd's own console — the terminal emulator opens its own.
-        let command = template.replace("{dir}", &cmd_quote(dir));
-        win::run(&format!("cmd.exe /C {command}"), true).ok()?;
+        // Launch the terminal the same way as the editor: resolve the
+        // template's first token to a real executable (extension included) and
+        // run it through ShellExecuteExW — the mechanism Explorer uses, so
+        // console wrapper apps like `wezterm` start reliably with no hidden
+        // console. `{dir}` is quoted for the command line.
+        win_launch(template, dir).ok()?;
         Some(template.to_string())
     }
 }
 
 /// Quotes a path for use inside a cmd command line, doubling embedded quotes
-/// (cmd's escape rule).
+/// so it can be safely embedded as a single argument.
 #[cfg(target_os = "windows")]
-fn cmd_quote(dir: &Path) -> String {
-    format!("\"{}\"", dir.to_string_lossy().replace('"', "\"\""))
+fn windows_quote_arg(path: &Path) -> String {
+    format!("\"{}\"", path.to_string_lossy().replace('"', "\"\""))
 }
 
-/// Windows-native process launching, avoiding `std::process::Command` where its
-/// argument quoting would mangle cmd command lines (Rust escapes embedded
-/// quotes as `\"`, which cmd reads as a backslash plus token boundary).
+/// Launches a configured command line on Windows, e.g.
+/// `wezterm start --cwd {dir}`. The first whitespace token is resolved to a
+/// real executable with [`resolve_executable`] (extension included), `{dir}`
+/// is replaced with the repo path, and the whole thing runs through
+/// ShellExecuteExW — matching how the editor is launched and avoiding cmd's
+/// quote mangling and CreateProcessW's inability to start scripts.
+#[cfg(target_os = "windows")]
+fn win_launch(template: &str, dir: &Path) -> Result<(), String> {
+    let (first, rest) = split_command(template).ok_or_else(|| "empty command".to_string())?;
+    let exe = resolve_executable(&first)
+        .ok_or_else(|| format!("`{first}` not found on PATH"))?
+        .to_string_lossy()
+        .into_owned();
+    let rest = rest.replace("{dir}", &windows_quote_arg(dir));
+    if rest.is_empty() {
+        win::run(&exe, None)
+    } else {
+        win::run(&exe, Some(&rest))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_command_handles_quoted_program() {
+        let parsed = split_command("\"C:/Program Files/Code/Code.exe\" --reuse-window");
+        let (program, args) = parsed.expect("quoted command should parse");
+        assert_eq!(program, "C:/Program Files/Code/Code.exe");
+        assert_eq!(args, "--reuse-window");
+    }
+
+    #[test]
+    fn split_command_handles_unquoted_program() {
+        let parsed = split_command("code --reuse-window");
+        let (program, args) = parsed.expect("command should parse");
+        assert_eq!(program, "code");
+        assert_eq!(args, "--reuse-window");
+    }
+
+    #[test]
+    fn split_command_rejects_unclosed_quote() {
+        assert!(split_command("\"C:/Program Files/Code/Code.exe --reuse-window").is_none());
+    }
+}
+
+/// Windows-native process launching. `std::process::Command` (and a raw
+/// CreateProcessW command line) mangling cmd scripts is avoided entirely by
+/// going through ShellExecuteW, which resolves executables and `.cmd`/`.bat`
+/// scripts exactly the way Explorer does.
 #[cfg(target_os = "windows")]
 mod win {
-    use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
-    use windows_sys::Win32::System::Threading::{
-        CREATE_NO_WINDOW, CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
-    };
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -366,46 +607,32 @@ mod win {
         Ok(())
     }
 
-    /// Creates a detached process from a raw command line, e.g.
-    /// `"C:\path\Code.exe" "C:\dir"` or `cmd.exe /C <template>`. `no_window`
-    /// suppresses the console the process would otherwise inherit.
-    pub fn run(command_line: &str, no_window: bool) -> Result<(), String> {
-        // `lpCommandLine` is mutable, hence the `mut` binding.
-        let mut line = wide(command_line);
-        let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-        startup.cb = size_of::<STARTUPINFOW>() as u32;
-        let mut process = PROCESS_INFORMATION {
-            hProcess: 0,
-            hThread: 0,
-            dwProcessId: 0,
-            dwThreadId: 0,
-        };
-        let flags: PROCESS_CREATION_FLAGS = if no_window { CREATE_NO_WINDOW } else { 0 };
-        // Safe: all pointers are valid or null, and the process information is
-        // only written into `process`.
-        let ok = unsafe {
-            CreateProcessW(
-                ptr::null(),
-                line.as_mut_ptr(),
-                ptr::null(),
-                ptr::null(),
+    /// Launches `program` (an executable, `.cmd`/`.bat` script or `.lnk`
+    /// shortcut) with optional arguments the way Explorer does. Detached, no
+    /// console window. Uses the default verb ("open").
+    pub fn run(program: &str, args: Option<&str>) -> Result<(), String> {
+        let program_w = wide(program);
+        let args_w = args.map(wide);
+
+        // Safe: all pointers reference valid null-terminated wide strings.
+        let result = unsafe {
+            ShellExecuteW(
                 0,
-                flags,
-                ptr::null(),
-                ptr::null(),
-                &startup,
-                &mut process,
+                ptr::null(), // default verb ("open")
+                program_w.as_ptr(),
+                args_w
+                    .as_ref()
+                    .map_or(ptr::null(), |args| args.as_ptr()),
+                ptr::null(), // working directory
+                SW_SHOWNORMAL,
             )
         };
-        if ok == 0 {
-            // Safe: GetLastError takes no arguments.
-            let err = unsafe { GetLastError() };
-            return Err(format!("failed to run `{command_line}` (error {err})"));
-        }
-        // Safe: these handles are owned by this call.
-        unsafe {
-            CloseHandle(process.hProcess);
-            CloseHandle(process.hThread);
+
+        // ShellExecuteW returns a value > 32 on success.
+        if result <= 32 {
+            return Err(format!(
+                "failed to launch `{program}`: ShellExecute error {result}"
+            ));
         }
         Ok(())
     }

@@ -58,6 +58,9 @@ pub enum Message {
     GraphScrolled(scrollable::Viewport),
     Opened(Result<String, String>),
     WindowReady(Option<Id>),
+    Focused,
+    Unfocused,
+    ToggleState(Option<bool>),
     Hotkey(hotkey::Event),
     Kde(kde::Event),
     Tray(tray::Event),
@@ -76,6 +79,7 @@ pub struct App {
     status: Option<String>,
     window: Option<Id>,
     hidden: bool,
+    focused: bool,
     quitting: bool,
 }
 
@@ -104,6 +108,7 @@ impl App {
             status: None,
             window: None,
             hidden: false,
+            focused: true,
             quitting: false,
         };
         app.rebuild_graph();
@@ -222,6 +227,28 @@ impl App {
         self.open_repo_with(repo, self.config.open_mode)
     }
 
+    /// Switches the visible view. The selection index means different things
+    /// per view (a filtered-list index vs. a graph node index), so the
+    /// highlighted repo is carried across the switch by name.
+    fn set_view(&mut self, view: View) {
+        if self.view == view {
+            return;
+        }
+        let name = self.selected_repo().map(|repo| repo.name.clone());
+        self.view = view;
+        self.selected = 0;
+        if let Some(name) = name {
+            let found = match view {
+                View::Graph => self.graph.nodes.iter().position(|n| n.name == name),
+                View::List => self.filtered().position(|repo| repo.name == name),
+            };
+            if let Some(index) = found {
+                self.selected = index;
+            }
+        }
+        self.clamp_selection();
+    }
+
     fn open_repo_with(&mut self, repo: &Repo, mode: OpenMode) -> Task<Message> {
         if !repo.path_known {
             self.status = Some(format!(
@@ -295,10 +322,29 @@ fn clone_destination(config: &Config, repo: &Repo) -> std::path::PathBuf {
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::SearchInputChanged(query) => {
+            let filtering = !query.trim().is_empty();
             app.query = query;
             app.status = None;
+            // Jump the selection to the first match so typing a query in the
+            // graph view autoscrolls to the matching node.
+            match app.view {
+                View::List => {
+                    if filtering {
+                        app.selected = 0;
+                    }
+                }
+                View::Graph => {
+                    if filtering {
+                        app.selected = app.graph_order().first().copied().unwrap_or(0);
+                    }
+                }
+            }
             app.clamp_selection();
-            Task::none()
+            if app.view == View::Graph {
+                app.scroll_to_selection()
+            } else {
+                Task::none()
+            }
         }
         Message::SearchSubmitted => match app.selected_repo().cloned() {
             Some(repo) => app.open_repo(&repo),
@@ -408,24 +454,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             Task::perform(async move { launch::open_config(&config) }, Message::Opened)
         }
         Message::ViewChanged(view) => {
-            if app.view != view {
-                // The selection index means different things per view (a
-                // filtered-list index vs. a graph node index), so carry the
-                // highlighted repo across the switch by name.
-                let name = app.selected_repo().map(|repo| repo.name.clone());
-                app.view = view;
-                app.selected = 0;
-                if let Some(name) = name {
-                    let found = match view {
-                        View::Graph => app.graph.nodes.iter().position(|n| n.name == name),
-                        View::List => app.filtered().position(|repo| repo.name == name),
-                    };
-                    if let Some(index) = found {
-                        app.selected = index;
-                    }
-                }
-                app.clamp_selection();
-            }
+            app.set_view(view);
             Task::none()
         }
         Message::GraphScrolled(viewport) => {
@@ -444,9 +473,45 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.window = id;
             Task::none()
         }
+        Message::Focused => {
+            app.focused = true;
+            Task::none()
+        }
+        Message::Unfocused => {
+            app.focused = false;
+            Task::none()
+        }
+        Message::ToggleState(minimized) => {
+            let Some(id) = app.window else {
+                return Task::none();
+            };
+            if minimized == Some(true) {
+                // A minimized window must be restored before focus can be
+                // taken; `gain_focus` alone is a no-op while minimized.
+                Task::batch([
+                    window::minimize(id, false),
+                    window::set_mode(id, Mode::Windowed),
+                    window::gain_focus(id),
+                    widget::operation::focus(SEARCH_ID),
+                ])
+            } else if !app.focused {
+                // Visible but covered by another window: focus, don't hide.
+                Task::batch([
+                    window::gain_focus(id),
+                    widget::operation::focus(SEARCH_ID),
+                ])
+            } else {
+                // Visible and focused: toggle away.
+                hide_or_minimize_window(app, id)
+            }
+        }
         Message::Hotkey(hotkey::Event::Toggle) => toggle_window(app),
         Message::Kde(kde::Event::Toggle) => toggle_window(app),
         Message::Tray(tray::Event::Toggle) => toggle_window(app),
+        Message::Tray(tray::Event::View(view)) => {
+            app.set_view(view);
+            Task::none()
+        }
         Message::Tray(tray::Event::Quit) => quit(app),
         Message::CloseRequested => {
             // With a tray icon enabled the close button hides to the tray
@@ -470,18 +535,42 @@ fn toggle_window(app: &mut App) -> Task<Message> {
         return Task::none();
     };
     if app.hidden {
-        app.hidden = false;
-        let mut task: Task<()> = window::set_mode(id, Mode::Windowed);
-        // Re-anchor above the toolbar; Wayland ignores this, X11/XWayland
-        // honors it. Best-effort.
-        if let Some(position) = crate::geometry::window_position() {
-            task = Task::batch([window::move_to(id, position), task]);
-        }
-        task.map(|_| Message::Escape)
+        show_window(app, id)
     } else {
-        app.hidden = true;
-        window::set_mode(id, Mode::Hidden)
+        // The window is visible. Query its minimized state so the hotkey
+        // restores it instead of hiding it; visible-but-unfocused windows are
+        // focused rather than toggled away (see Message::ToggleState).
+        window::is_minimized(id).map(Message::ToggleState)
     }
+}
+
+fn hide_or_minimize_window(app: &mut App, id: Id) -> Task<Message> {
+    #[cfg(target_os = "windows")]
+    {
+        if !app.config.tray {
+            // On Windows without tray support, hotkey-toggling away should
+            // minimize to the taskbar instead of becoming hidden.
+            return window::minimize(id, true);
+        }
+    }
+
+    app.hidden = true;
+    window::set_mode(id, Mode::Hidden)
+}
+
+/// Shows a hidden window, re-anchors it, and gives it keyboard focus.
+fn show_window(app: &mut App, id: Id) -> Task<Message> {
+    app.hidden = false;
+    let mut task: Task<Message> = Task::batch([
+        window::set_mode(id, Mode::Windowed),
+        window::gain_focus(id),
+    ]);
+    // Re-anchor above the toolbar; Wayland ignores this, X11/XWayland honors
+    // it. Best-effort.
+    if let Some(position) = crate::geometry::window_position() {
+        task = Task::batch([window::move_to(id, position), task]);
+    }
+    Task::batch([task, widget::operation::focus(SEARCH_ID)])
 }
 
 fn quit(app: &mut App) -> Task<Message> {
@@ -745,6 +834,14 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     let kde = crate::kde::subscription(&app.config).map(Message::Kde);
     let tray = crate::tray::subscription(&app.config).map(Message::Tray);
     let close = window::close_requests().map(|_| Message::CloseRequested);
+    // Track keyboard focus so the toggle hotkey can bring the window forward
+    // instead of hiding it when it's merely covered by another window.
+    let window_events: Subscription<Message> =
+        window::events().filter_map(|(_id, event)| match event {
+            window::Event::Focused => Some(Message::Focused),
+            window::Event::Unfocused => Some(Message::Unfocused),
+            _ => None,
+        });
 
-    Subscription::batch([keyboard, hotkey, kde, tray, close])
+    Subscription::batch([keyboard, hotkey, kde, tray, close, window_events])
 }

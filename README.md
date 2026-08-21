@@ -94,6 +94,16 @@ Notes:
   (shell-quoted on Unix). A bare command is also fine — an emulator is
   auto-detected otherwise (alacritty, kitty, gnome-terminal, konsole, foot,
   wezterm, xterm, …).
+- On Windows, quoted executable paths and extra arguments are supported for
+  both `editor` and `terminal`, for example:
+
+  ```toml
+  editor = '"C:\\Program Files\\Microsoft VS Code\\Code.exe" --reuse-window'
+  terminal = '"C:\\Program Files\\WezTerm\\wezterm-gui.exe" start --cwd {dir}'
+  ```
+
+  If no `{dir}` / `{file}` / `{target}` placeholder is present in `editor`,
+  repo-zoo appends the project path automatically.
 - `sln` is handy on Windows: when set and the file exists, opening the project
   hands the solution file to its system association (Visual Studio et al.) via
   `ShellExecuteW` instead of the configured editor.

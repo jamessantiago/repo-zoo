@@ -13,6 +13,7 @@ use iced::Subscription;
 use iced::futures::Stream;
 use iced::futures::channel::mpsc;
 
+use crate::app::View;
 use crate::config::Config;
 
 /// Events produced by the tray icon.
@@ -20,11 +21,16 @@ use crate::config::Config;
 pub enum Event {
     /// Show or hide the launcher window.
     Toggle,
+    /// Switch the launcher to a specific view (graph or list).
+    View(View),
     /// Exit the application.
     Quit,
 }
 
 const TOGGLE_ID: &str = "repo-zoo-toggle";
+const VIEW_ID: &str = "repo-zoo-view";
+const VIEW_GRAPH_ID: &str = "repo-zoo-view-graph";
+const VIEW_LIST_ID: &str = "repo-zoo-view-list";
 const QUIT_ID: &str = "repo-zoo-quit";
 
 /// Returns a subscription that forwards tray menu selections. Empty when the
@@ -49,18 +55,26 @@ fn stream() -> impl Stream<Item = Event> {
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error>> {
     use tray_icon::TrayIconBuilder;
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem, Submenu};
 
-    // On Linux the appindicator menu and clicks are dispatched by a GTK main
-    // loop owned on this thread. Windows needs no such pump: tray-icon runs
-    // its own message loop behind the receiver channels.
+    // The tray window's messages must be pumped on this thread: on Linux by a
+    // GTK main loop and on Windows by a win32 message loop. Without them the
+    // hidden tray window never receives click callbacks, so the context menu
+    // never shows.
     #[cfg(target_os = "linux")]
     let _ = gtk::init();
 
     let toggle = MenuItem::with_id(TOGGLE_ID, "Show/Hide repo-zoo", true, None);
-    let quit = MenuItem::with_id(QUIT_ID, "Quit", true, None);
+    let graph = MenuItem::with_id(VIEW_GRAPH_ID, "Graph", true, None);
+    let list = MenuItem::with_id(VIEW_LIST_ID, "List", true, None);
+    let view = Submenu::with_id(VIEW_ID, "View", true);
+    view.append_items(&[&graph, &list])?;
+    let quit = MenuItem::with_id(QUIT_ID, "Exit", true, None);
 
-    let menu = Menu::with_items(&[&toggle, &quit])?;
+    let menu = Menu::new();
+    menu.append(&toggle)?;
+    menu.append(&view)?;
+    menu.append(&quit)?;
 
     let icon = tray_icon();
 
@@ -74,9 +88,12 @@ fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error
     let tray_rx = tray_icon::TrayIconEvent::receiver();
 
     loop {
+        pump_messages();
         while let Ok(event) = menu_rx.try_recv() {
             let forward = match event.id().as_ref() {
                 TOGGLE_ID => Event::Toggle,
+                VIEW_GRAPH_ID => Event::View(View::Graph),
+                VIEW_LIST_ID => Event::View(View::List),
                 QUIT_ID => Event::Quit,
                 _ => continue,
             };
@@ -96,6 +113,34 @@ fn run(tx: mpsc::UnboundedSender<Event>) -> Result<(), Box<dyn std::error::Error
         std::thread::sleep(Duration::from_millis(25));
     }
 }
+
+/// Pumps the win32 message queue so the hidden tray window receives the
+/// shell's click callbacks (`WM_USER_TRAYICON`) and `TrackPopupMenu` runs.
+#[cfg(target_os = "windows")]
+fn pump_messages() {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+    };
+
+    let mut msg = MSG {
+        hwnd: 0,
+        message: 0,
+        wParam: 0,
+        lParam: 0,
+        time: 0,
+        pt: POINT { x: 0, y: 0 },
+    };
+    while unsafe { PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) } != 0 {
+        unsafe {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn pump_messages() {}
 
 /// 22x22 tray icon downscaled from the bundled 256px PNG. The tray size is
 /// what Windows and most Linux panels request; the icon crate scales it.
