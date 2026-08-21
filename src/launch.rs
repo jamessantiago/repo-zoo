@@ -476,10 +476,9 @@ fn open_in_terminal(dir: &Path, configured: &str) -> Result<String, String> {
 /// on success; `None` when the executable can't be found (so the caller falls
 /// back to auto-detection).
 fn spawn_configured_terminal(template: &str, dir: &Path) -> Option<String> {
-    let (first, rest) = split_command(template)?;
-
     #[cfg(not(target_os = "windows"))]
     {
+        let (first, rest) = split_command(template)?;
         // Resolve the executable first: `sh -c` would happily "succeed"
         // while the configured terminal silently fails when it isn't on PATH.
         let resolved = resolve_executable(&first)?;
@@ -494,6 +493,7 @@ fn spawn_configured_terminal(template: &str, dir: &Path) -> Option<String> {
     }
     #[cfg(target_os = "windows")]
     {
+        let _ = split_command(template)?;
         // Launch the terminal the same way as the editor: resolve the
         // template's first token to a real executable (extension included) and
         // run it through ShellExecuteExW — the mechanism Explorer uses, so
