@@ -6,6 +6,8 @@ editor, a terminal, or a file manager — from a searchable list or an
 interactive dependency graph. Runs on Linux (KDE Plasma first-class) and
 Windows.
 
+![demo](demo.png)
+
 ## Features
 
 - **Graph and list views** — browse projects as a dependency graph or a flat,
@@ -24,6 +26,9 @@ Windows.
 - **Config is just TOML** — one file, hand-editable, re-read on demand.
 
 ## Install
+
+Pre-built binaries are available on the
+[GitHub Releases](https://github.com/jamessantiago/repo-zoo/releases) page.
 
 ### Linux
 
